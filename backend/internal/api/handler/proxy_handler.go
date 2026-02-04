@@ -242,49 +242,19 @@ func (h *ProxyHandler) ListModels(c *gin.Context) {
 		"object": "list",
 		"data": []gin.H{
 			{
-				"id":      "gpt-4o",
+				"id":      "claude-sonnet-4-5-thinking",
 				"object":  "model",
 				"created": 1234567890,
 				"owned_by": "anthropic",
 			},
 			{
-				"id":      "gpt-4o-mini",
+				"id":      "claude-opus-4-5-thinking",
 				"object":  "model",
 				"created": 1234567890,
 				"owned_by": "anthropic",
 			},
 			{
-				"id":      "gpt-4-turbo",
-				"object":  "model",
-				"created": 1234567890,
-				"owned_by": "anthropic",
-			},
-			{
-				"id":      "gpt-4",
-				"object":  "model",
-				"created": 1234567890,
-				"owned_by": "anthropic",
-			},
-			{
-				"id":      "gpt-3.5-turbo",
-				"object":  "model",
-				"created": 1234567890,
-				"owned_by": "anthropic",
-			},
-			{
-				"id":      "claude-3-5-sonnet-20241022",
-				"object":  "model",
-				"created": 1234567890,
-				"owned_by": "anthropic",
-			},
-			{
-				"id":      "claude-3-5-haiku-20241022",
-				"object":  "model",
-				"created": 1234567890,
-				"owned_by": "anthropic",
-			},
-			{
-				"id":      "claude-3-opus-20240229",
+				"id":      "claude-haiku-4-5-20251001",
 				"object":  "model",
 				"created": 1234567890,
 				"owned_by": "anthropic",
