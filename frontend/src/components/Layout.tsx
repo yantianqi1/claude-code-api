@@ -1,11 +1,14 @@
-import { Layout as AntLayout, Menu, Typography, Avatar } from 'antd';
+import { Layout as AntLayout, Menu, Typography, Avatar, Button, Dropdown } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   DashboardOutlined,
   CloudServerOutlined,
   SwapOutlined,
   FileTextOutlined,
+  LogoutOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
+import { useAuth } from '@/contexts/AuthContext';
 
 const { Header, Sider, Content } = AntLayout;
 const { Title } = Typography;
@@ -20,6 +23,21 @@ const menuItems = [
 export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { logout } = useAuth();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  const userMenuItems = [
+    {
+      key: 'logout',
+      icon: <LogoutOutlined />,
+      label: '退出登录',
+      onClick: handleLogout,
+    },
+  ];
 
   return (
     <AntLayout style={{ minHeight: '100vh', background: '#f5f7fa' }}>
@@ -120,6 +138,7 @@ export default function Layout() {
             padding: '0 32px',
             display: 'flex',
             alignItems: 'center',
+            justifyContent: 'space-between',
             boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
           }}
         >
@@ -135,6 +154,15 @@ export default function Layout() {
           >
             管理控制台
           </Title>
+          <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
+            <Avatar
+              icon={<UserOutlined />}
+              style={{
+                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                cursor: 'pointer',
+              }}
+            />
+          </Dropdown>
         </Header>
         <Content
           style={{

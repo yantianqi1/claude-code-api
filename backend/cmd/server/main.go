@@ -52,7 +52,7 @@ func main() {
 	}
 
 	// Setup router
-	r := router.Setup(cfg.EnableCORS, cfg.AllowedOrigins)
+	r := router.Setup(cfg)
 
 	// Start server
 	addr := fmt.Sprintf(":%d", cfg.ServerPort)

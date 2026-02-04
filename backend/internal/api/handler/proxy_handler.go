@@ -12,17 +12,19 @@ import (
 // ProxyHandler handles proxy API requests
 type ProxyHandler struct {
 	proxyService *proxy.ProxyService
+	apiKey       string
 }
 
 // NewProxyHandler creates a new proxy handler
-func NewProxyHandler() *ProxyHandler {
+func NewProxyHandler(apiKey string) *ProxyHandler {
 	return &ProxyHandler{
 		proxyService: proxy.NewProxyService(),
+		apiKey:       apiKey,
 	}
 }
 
-// ProxyMessage handles the /v1/messages endpoint
-func (h *ProxyHandler) ProxyMessage(c *gin.Context) {
+// validateAPIKey validates the API key from request
+func (h *ProxyHandler) validateAPIKey(c *gin.Context) (string, bool) {
 	// Get API key from header
 	apiKey := c.GetHeader("x-api-key")
 	if apiKey == "" {
@@ -31,6 +33,41 @@ func (h *ProxyHandler) ProxyMessage(c *gin.Context) {
 		if strings.HasPrefix(auth, "Bearer ") {
 			apiKey = strings.TrimPrefix(auth, "Bearer ")
 		}
+	}
+
+	// Try cookie (for web UI)
+	if apiKey == "" {
+		if cookie, err := c.Cookie("auth_token"); err == nil {
+			apiKey = cookie
+		}
+	}
+
+	// If no API key configured, allow access
+	if h.apiKey == "" {
+		return apiKey, true
+	}
+
+	// Validate API key
+	if apiKey != h.apiKey {
+		return "", false
+	}
+
+	return apiKey, true
+}
+
+// ProxyMessage handles the /v1/messages endpoint
+func (h *ProxyHandler) ProxyMessage(c *gin.Context) {
+	// Validate API key
+	apiKey, valid := h.validateAPIKey(c)
+	if !valid {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "authentication_error",
+				"message": "Invalid API key",
+			},
+		})
+		return
 	}
 
 	// Parse request body
@@ -85,12 +122,17 @@ func (h *ProxyHandler) ProxyMessage(c *gin.Context) {
 
 // StreamHandler handles SSE streaming
 func (h *ProxyHandler) StreamHandler(c *gin.Context) {
-	apiKey := c.GetHeader("x-api-key")
-	if apiKey == "" {
-		auth := c.GetHeader("Authorization")
-		if strings.HasPrefix(auth, "Bearer ") {
-			apiKey = strings.TrimPrefix(auth, "Bearer ")
-		}
+	// Validate API key
+	apiKey, valid := h.validateAPIKey(c)
+	if !valid {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "authentication_error",
+				"message": "Invalid API key",
+			},
+		})
+		return
 	}
 
 	var req model.AnthropicMessageRequest

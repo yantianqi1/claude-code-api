@@ -19,7 +19,20 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true,
 });
+
+// Request interceptor
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Unauthorized - clear auth and redirect to login
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
 
 // Channels API
 export const channelsApi = {
@@ -52,6 +65,13 @@ export const statsApi = {
   getLogs: (filter?: StatsFilter, page = 1, pageSize = 20) =>
     api.get<PaginatedResponse<RequestLog>>('/stats/logs', { params: { ...filter, page, page_size: pageSize } }),
   export: (filter?: StatsFilter) => api.get('/stats/export', { params: filter, responseType: 'blob' }),
+};
+
+// Auth API
+export const authApi = {
+  login: (apiKey: string) => api.post<{ success: boolean; message: string; token: string }>('/auth/login', { api_key: apiKey }),
+  logout: () => api.post('/auth/logout'),
+  verify: () => api.get<{ authenticated: boolean }>('/auth/verify'),
 };
 
 export default api;

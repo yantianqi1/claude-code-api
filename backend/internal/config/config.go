@@ -9,6 +9,7 @@ import (
 type Config struct {
 	ServerPort     int
 	DataDir        string
+	APIKey         string
 	Debug          bool
 	EnableCORS     bool
 	AllowedOrigins string
@@ -19,6 +20,7 @@ func Load() *Config {
 	return &Config{
 		ServerPort:     getEnvInt("SERVER_PORT", 8080),
 		DataDir:        getEnv("DATA_DIR", "./data"),
+		APIKey:         getEnv("API_KEY", ""),
 		Debug:          getEnvBool("DEBUG", false),
 		EnableCORS:     getEnvBool("ENABLE_CORS", true),
 		AllowedOrigins: getEnv("ALLOWED_ORIGINS", "*"),
