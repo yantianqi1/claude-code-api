@@ -7,19 +7,22 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/claude-api-gateway/backend/internal/model"
 	"github.com/claude-api-gateway/backend/internal/proxy"
+	"github.com/claude-api-gateway/backend/internal/service"
 )
 
 // ProxyHandler handles proxy API requests
 type ProxyHandler struct {
-	proxyService *proxy.ProxyService
-	apiKey       string
+	proxyService   *proxy.ProxyService
+	apiKey         string
+	mappingService *service.MappingService
 }
 
 // NewProxyHandler creates a new proxy handler
 func NewProxyHandler(apiKey string) *ProxyHandler {
 	return &ProxyHandler{
-		proxyService: proxy.NewProxyService(),
-		apiKey:       apiKey,
+		proxyService:   proxy.NewProxyService(),
+		apiKey:         apiKey,
+		mappingService: service.NewMappingService(),
 	}
 }
 
@@ -235,30 +238,35 @@ func (h *ProxyHandler) ProxyChatCompletions(c *gin.Context) {
 }
 
 // ListModels handles GET /v1/models endpoint
+// Returns all enabled display models from the database mappings
 func (h *ProxyHandler) ListModels(c *gin.Context) {
-	// Return a static list of available models
-	// In production, you might want to fetch this from database or upstream
+	mappings, err := h.mappingService.List()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch models"})
+		return
+	}
+
+	// Use a map to deduplicate display_model names
+	modelMap := make(map[string]bool)
+	for _, m := range mappings {
+		if m.IsEnabled {
+			modelMap[m.DisplayModel] = true
+		}
+	}
+
+	// Convert map to slice
+	models := make([]gin.H, 0, len(modelMap))
+	for modelID := range modelMap {
+		models = append(models, gin.H{
+			"id":       modelID,
+			"object":   "model",
+			"created":  1234567890,
+			"owned_by": "anthropic",
+		})
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data": []gin.H{
-			{
-				"id":      "claude-sonnet-4-5-thinking",
-				"object":  "model",
-				"created": 1234567890,
-				"owned_by": "anthropic",
-			},
-			{
-				"id":      "claude-opus-4-5-thinking",
-				"object":  "model",
-				"created": 1234567890,
-				"owned_by": "anthropic",
-			},
-			{
-				"id":      "claude-haiku-4-5-20251001",
-				"object":  "model",
-				"created": 1234567890,
-				"owned_by": "anthropic",
-			},
-		},
+		"data":   models,
 	})
 }
