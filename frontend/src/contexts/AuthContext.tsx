@@ -32,7 +32,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     const checkAuth = async () => {
       try {
         const result = await authApi.verify();
-        setIsAuthenticated(result.authenticated);
+        setIsAuthenticated(result.data.authenticated);
       } catch {
         setIsAuthenticated(false);
       } finally {
@@ -45,10 +45,10 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const login = async (apiKey: string) => {
     try {
       const response = await authApi.login(apiKey);
-      if (response.success) {
+      if (response.data.success) {
         setIsAuthenticated(true);
       }
-      return response;
+      return response.data;
     } catch {
       return {
         success: false,
@@ -68,8 +68,8 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const verify = async () => {
     try {
       const result = await authApi.verify();
-      setIsAuthenticated(result.authenticated);
-      return result.authenticated;
+      setIsAuthenticated(result.data.authenticated);
+      return result.data.authenticated;
     } catch {
       setIsAuthenticated(false);
       return false;

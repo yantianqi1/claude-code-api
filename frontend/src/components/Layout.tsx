@@ -1,4 +1,4 @@
-import { Layout as AntLayout, Menu, Typography, Avatar, Button, Dropdown } from 'antd';
+import { Layout as AntLayout, Menu, Typography, Avatar, Dropdown } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   DashboardOutlined,
