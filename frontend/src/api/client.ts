@@ -22,12 +22,19 @@ const api = axios.create({
   withCredentials: true,
 });
 
-// Request interceptor
+// Response interceptor - handle 401 errors
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      // Unauthorized - clear auth and redirect to login
+    // Only redirect to login if:
+    // 1. It's a 401 error
+    // 2. Not already on login page
+    // 3. Not an auth endpoint request (to avoid infinite loops)
+    if (
+      error.response?.status === 401 &&
+      !window.location.pathname.startsWith('/login') &&
+      !error.config?.url?.startsWith('/auth/')
+    ) {
       window.location.href = '/login';
     }
     return Promise.reject(error);
