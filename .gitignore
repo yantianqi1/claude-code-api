@@ -1,0 +1,35 @@
+# Binaries
+/backend/gateway
+/backend/server
+
+# Data
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+
+# Go
+go.sum
+
+# Node
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
