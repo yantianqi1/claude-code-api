@@ -5,33 +5,34 @@ import { useQuery } from '@tanstack/react-query';
 import dayjs, { Dayjs } from 'dayjs';
 import { statsApi } from '@/api/client';
 import type { RequestLog, StatsFilter } from '@/types';
+import locale from 'antd/es/date-picker/locale/zh_CN';
 
 const { RangePicker } = DatePicker;
 
 const columns = [
-  { title: 'Time', dataIndex: 'request_time', key: 'request_time', render: (t: string) => dayjs(t).format('MM-DD HH:mm:ss') },
-  { title: 'Channel', dataIndex: 'channel_name', key: 'channel_name' },
-  { title: 'Model', dataIndex: 'model_name', key: 'model_name' },
+  { title: '时间', dataIndex: 'request_time', key: 'request_time', render: (t: string) => dayjs(t).format('MM-DD HH:mm:ss') },
+  { title: '渠道', dataIndex: 'channel_name', key: 'channel_name' },
+  { title: '模型', dataIndex: 'model_name', key: 'model_name' },
   {
-    title: 'Tokens',
+    title: 'Token流向',
     key: 'tokens',
     render: (_: unknown, r: RequestLog) => `${r.input_tokens}→${r.output_tokens}`,
   },
-  { title: 'Total Tokens', dataIndex: 'total_tokens', key: 'total_tokens' },
-  { title: 'Latency', dataIndex: 'latency_ms', key: 'latency_ms', render: (v: number) => `${v}ms` },
+  { title: '总Token数', dataIndex: 'total_tokens', key: 'total_tokens' },
+  { title: '延迟', dataIndex: 'latency_ms', key: 'latency_ms', render: (v: number) => `${v}ms` },
   {
-    title: 'Status',
+    title: '状态',
     dataIndex: 'status',
     key: 'status',
     render: (status: string) =>
       status === 'success' ? (
-        <Tag color="green">Success</Tag>
+        <Tag color="green">成功</Tag>
       ) : (
-        <Tag color="red">Error</Tag>
+        <Tag color="red">失败</Tag>
       ),
   },
   {
-    title: 'Error',
+    title: '错误信息',
     dataIndex: 'error_message',
     key: 'error_message',
     ellipsis: true,
@@ -98,21 +99,35 @@ export default function Logs() {
           value={dateRange}
           onChange={handleDateChange}
           allowClear={false}
+          locale={locale}
         />
         <Select
-          placeholder="Status"
+          placeholder="状态筛选"
           allowClear
           style={{ width: 120 }}
           onChange={(value) => setFilter({ ...filter, status: value })}
         >
-          <Select.Option value="success">Success</Select.Option>
-          <Select.Option value="error">Error</Select.Option>
+          <Select.Option value="success">成功</Select.Option>
+          <Select.Option value="error">失败</Select.Option>
         </Select>
-        <Button icon={<ReloadOutlined />} onClick={() => refetch()}>
-          Refresh
+        <Button
+          icon={<ReloadOutlined />}
+          onClick={() => refetch()}
+          style={{ borderRadius: '8px' }}
+        >
+          刷新
         </Button>
-        <Button icon={<DownloadOutlined />} onClick={handleExport}>
-          Export CSV
+        <Button
+          icon={<DownloadOutlined />}
+          onClick={handleExport}
+          style={{
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            border: 'none',
+            color: '#fff',
+            borderRadius: '8px',
+          }}
+        >
+          导出CSV
         </Button>
       </Space>
 
@@ -126,7 +141,7 @@ export default function Logs() {
           pageSize: pagination.pageSize,
           total: logsData?.total || 0,
           showSizeChanger: true,
-          showTotal: (t) => `Total ${t} logs`,
+          showTotal: (t) => `共 ${t} 条记录`,
           onChange: (page, pageSize) => setPagination({ current: page, pageSize }),
         }}
         scroll={{ x: 1000 }}

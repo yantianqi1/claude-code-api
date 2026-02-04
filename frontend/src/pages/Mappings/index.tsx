@@ -18,18 +18,18 @@ import { channelsApi, mappingsApi } from '@/api/client';
 import type { ModelMapping, MappingCreate, Channel } from '@/types';
 
 const columns = (onEdit: (mapping: ModelMapping) => void, onDelete: (id: number) => void) => [
-  { title: 'Display Model', dataIndex: 'display_model', key: 'display_model' },
-  { title: 'Upstream Model', dataIndex: 'upstream_model', key: 'upstream_model' },
-  { title: 'Channel', dataIndex: 'channel_name', key: 'channel_name' },
+  { title: '显示模型', dataIndex: 'display_model', key: 'display_model' },
+  { title: '上游模型', dataIndex: 'upstream_model', key: 'upstream_model' },
+  { title: '渠道', dataIndex: 'channel_name', key: 'channel_name' },
   {
-    title: 'Status',
+    title: '状态',
     dataIndex: 'is_enabled',
     key: 'is_enabled',
     render: (enabled: boolean) =>
-      enabled ? <Tag color="green">Enabled</Tag> : <Tag color="red">Disabled</Tag>,
+      enabled ? <Tag color="green">启用</Tag> : <Tag color="red">禁用</Tag>,
   },
   {
-    title: 'Actions',
+    title: '操作',
     key: 'actions',
     render: (_: unknown, record: ModelMapping) => (
       <Space>
@@ -38,16 +38,16 @@ const columns = (onEdit: (mapping: ModelMapping) => void, onDelete: (id: number)
           icon={<EditOutlined />}
           onClick={() => onEdit(record)}
         >
-          Edit
+          编辑
         </Button>
         <Popconfirm
-          title="Delete this mapping?"
+          title="确定删除此映射吗？"
           onConfirm={() => onDelete(record.id)}
-          okText="Yes"
-          cancelText="No"
+          okText="确定"
+          cancelText="取消"
         >
           <Button type="link" danger icon={<DeleteOutlined />}>
-            Delete
+            删除
           </Button>
         </Popconfirm>
       </Space>
@@ -80,7 +80,7 @@ export default function Mappings() {
   const createMutation = useMutation({
     mutationFn: (data: MappingCreate) => mappingsApi.create(data),
     onSuccess: () => {
-      message.success('Mapping created');
+      message.success('模型映射创建成功');
       queryClient.invalidateQueries({ queryKey: ['mappings'] });
       setIsModalOpen(false);
       form.resetFields();
@@ -91,7 +91,7 @@ export default function Mappings() {
     mutationFn: ({ id, data }: { id: number; data: Partial<ModelMapping> }) =>
       mappingsApi.update(id, data),
     onSuccess: () => {
-      message.success('Mapping updated');
+      message.success('模型映射更新成功');
       queryClient.invalidateQueries({ queryKey: ['mappings'] });
       setIsModalOpen(false);
       setEditingMapping(null);
@@ -102,7 +102,7 @@ export default function Mappings() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => mappingsApi.delete(id),
     onSuccess: () => {
-      message.success('Mapping deleted');
+      message.success('模型映射删除成功');
       queryClient.invalidateQueries({ queryKey: ['mappings'] });
     },
   });
@@ -147,8 +147,15 @@ export default function Mappings() {
           type="primary"
           icon={<PlusOutlined />}
           onClick={() => setIsModalOpen(true)}
+          style={{
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            border: 'none',
+            borderRadius: '8px',
+            height: '40px',
+            fontSize: '14px',
+          }}
         >
-          Add Model Mapping
+          添加模型映射
         </Button>
       </div>
 
@@ -160,41 +167,47 @@ export default function Mappings() {
       />
 
       <Modal
-        title={editingMapping ? 'Edit Model Mapping' : 'Add Model Mapping'}
+        title={editingMapping ? '编辑模型映射' : '添加模型映射'}
         open={isModalOpen}
         onOk={handleModalOk}
         onCancel={handleCancel}
         confirmLoading={createMutation.isPending || updateMutation.isPending}
+        okButtonProps={{
+          style: {
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            border: 'none',
+          },
+        }}
       >
         <Form form={form} layout="vertical">
           <Form.Item
-            label="Channel"
+            label="渠道"
             name="channel_id"
-            rules={[{ required: true, message: 'Please select a channel' }]}
+            rules={[{ required: true, message: '请选择一个渠道' }]}
           >
-            <Select options={channelOptions} placeholder="Select channel" />
+            <Select options={channelOptions} placeholder="选择渠道" />
           </Form.Item>
 
           <Form.Item
-            label="Display Model Name"
+            label="显示模型名称"
             name="display_model"
-            rules={[{ required: true, message: 'Please enter display model name' }]}
-            extra="The model name that clients will use (e.g., claude-sonnet-4-5)"
+            rules={[{ required: true, message: '请输入显示模型名称' }]}
+            extra="客户端将使用的模型名称（例如：claude-sonnet-4-5）"
           >
             <Input placeholder="claude-sonnet-4-5" />
           </Form.Item>
 
           <Form.Item
-            label="Upstream Model Name"
+            label="上游模型名称"
             name="upstream_model"
-            rules={[{ required: true, message: 'Please enter upstream model name' }]}
-            extra="The actual model name to send to the API (e.g., claude-3-5-sonnet-20241022)"
+            rules={[{ required: true, message: '请输入上游模型名称' }]}
+            extra="实际发送给API的模型名称（例如：claude-3-5-sonnet-20241022）"
           >
             <Input placeholder="claude-3-5-sonnet-20241022" />
           </Form.Item>
 
           <Form.Item
-            label="Enabled"
+            label="启用状态"
             name="is_enabled"
             valuePropName="checked"
             initialValue={true}
