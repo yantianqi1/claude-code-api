@@ -84,3 +84,83 @@ type Delta struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
+
+// OpenAI Chat Completion Models
+
+// OpenAIMessage represents a message in OpenAI format
+type OpenAIMessage struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"` // Can be string or array of content blocks
+}
+
+// OpenAIChatRequest represents OpenAI chat completion request
+type OpenAIChatRequest struct {
+	Model            string          `json:"model"`
+	Messages         []OpenAIMessage `json:"messages"`
+	MaxTokens        *int            `json:"max_tokens,omitempty"`
+	Temperature      *float64        `json:"temperature,omitempty"`
+	TopP             *float64        `json:"top_p,omitempty"`
+	Stream           bool            `json:"stream,omitempty"`
+	Stop             any             `json:"stop,omitempty"` // Can be string or array of strings
+	Functions        any             `json:"functions,omitempty"`
+	Tools            any             `json:"tools,omitempty"`
+	ToolChoice       any             `json:"tool_choice,omitempty"`
+}
+
+// OpenAIChatResponse represents OpenAI chat completion response
+type OpenAIChatResponse struct {
+	ID      string           `json:"id"`
+	Object  string           `json:"object"`
+	Created int64            `json:"created"`
+	Model   string           `json:"model"`
+	Choices []OpenAIChoice   `json:"choices"`
+	Usage   OpenAIUsage      `json:"usage"`
+}
+
+// OpenAIChoice represents a choice in the response
+type OpenAIChoice struct {
+	Index        int           `json:"index"`
+	Message      OpenAIMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
+}
+
+// OpenAIUsage represents token usage in OpenAI format
+type OpenAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// OpenAIStreamChunk represents a streaming chunk
+type OpenAIStreamChunk struct {
+	ID      string              `json:"id"`
+	Object  string              `json:"object"`
+	Created int64               `json:"created"`
+	Model   string              `json:"model"`
+	Choices []OpenAIStreamChoice `json:"choices"`
+}
+
+// OpenAIStreamChoice represents a choice in streaming response
+type OpenAIStreamChoice struct {
+	Index        int            `json:"index"`
+	Delta        OpenAIDelta    `json:"delta"`
+	FinishReason *string        `json:"finish_reason"`
+}
+
+// OpenAIDelta represents delta content in streaming
+type OpenAIDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+// OpenAIErrorResponse represents OpenAI error response
+type OpenAIErrorResponse struct {
+	Error OpenAIErrorDetail `json:"error"`
+}
+
+// OpenAIErrorDetail represents error details
+type OpenAIErrorDetail struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    any    `json:"code,omitempty"`
+}

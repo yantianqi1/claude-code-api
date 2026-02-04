@@ -164,10 +164,72 @@ func (h *ProxyHandler) ProxyGet(c *gin.Context) {
 		"version": "1.0.0",
 		"endpoints": []string{
 			"POST /v1/messages - Anthropic Messages API",
+			"POST /v1/chat/completions - OpenAI Chat Completions API",
 			"GET  /api/health - Health check",
 			"GET  /api/channels - List channels",
 			"POST /api/channels - Create channel",
 			"GET  /api/stats - Get statistics",
 		},
 	})
+}
+
+// ProxyChatCompletions handles the /v1/chat/completions endpoint (OpenAI compatible)
+func (h *ProxyHandler) ProxyChatCompletions(c *gin.Context) {
+	// Validate API key
+	apiKey, valid := h.validateAPIKey(c)
+	if !valid {
+		c.JSON(http.StatusUnauthorized, model.OpenAIErrorResponse{
+			Error: model.OpenAIErrorDetail{
+				Type:    "invalid_request_error",
+				Message: "Incorrect API key provided",
+			},
+		})
+		return
+	}
+
+	// Parse request body
+	var req model.OpenAIChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, model.OpenAIErrorResponse{
+			Error: model.OpenAIErrorDetail{
+				Type:    "invalid_request_error",
+				Message: "Invalid request body: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// Get client IP
+	ipAddress := c.ClientIP()
+
+	// Handle streaming
+	if req.Stream {
+		c.Writer.Header().Set("Content-Type", "text/event-stream")
+		c.Writer.Header().Set("Cache-Control", "no-cache")
+		c.Writer.Header().Set("Connection", "keep-alive")
+
+		if err := h.proxyService.ProxyChatStream(&req, apiKey, ipAddress, c.Writer); err != nil {
+			c.JSON(http.StatusBadGateway, model.OpenAIErrorResponse{
+				Error: model.OpenAIErrorDetail{
+					Type:    "api_error",
+					Message: err.Error(),
+				},
+			})
+		}
+		return
+	}
+
+	// Handle non-streaming request
+	resp, err := h.proxyService.ProxyChat(&req, apiKey, ipAddress)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, model.OpenAIErrorResponse{
+			Error: model.OpenAIErrorDetail{
+				Type:    "api_error",
+				Message: err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
 }

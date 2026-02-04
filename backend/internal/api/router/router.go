@@ -40,6 +40,9 @@ func Setup(cfg *config.Config) *gin.Engine {
 	// Anthropic API compatible endpoint
 	r.POST("/v1/messages", proxyHandler.ProxyMessage)
 
+	// OpenAI API compatible endpoint
+	r.POST("/v1/chat/completions", proxyHandler.ProxyChatCompletions)
+
 	// Management API (protected by auth middleware)
 	managementAPI := r.Group("/api")
 	managementAPI.Use(middleware.AuthMiddleware(cfg.APIKey))

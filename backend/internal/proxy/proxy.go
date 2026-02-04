@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/claude-api-gateway/backend/internal/model"
@@ -423,4 +424,353 @@ func (s *ProxyService) TestChannel(baseURL, apiKey string) error {
 	}
 
 	return nil
+}
+
+// ProxyChat proxies an OpenAI format chat completion request
+func (s *ProxyService) ProxyChat(req *model.OpenAIChatRequest, apiKey string, ipAddress string) (*model.OpenAIChatResponse, error) {
+	startTime := time.Now()
+	requestID := uuid.New().String()
+
+	// Find model mapping
+	mappings, err := s.mappingRepo.FindByDisplayModel(req.Model)
+	if err != nil || len(mappings) == 0 {
+		// No mapping found, proxy directly
+		return s.proxyChatToChannel(req, apiKey, ipAddress, requestID, startTime, nil, req.Model)
+	}
+
+	// Try each mapped channel in priority order
+	for _, mapping := range mappings {
+		if !mapping.IsEnabled {
+			continue
+		}
+
+		channel, err := s.channelRepo.GetByID(mapping.ChannelID)
+		if err != nil {
+			logger.Error("Failed to get channel %d: %v", mapping.ChannelID, err)
+			continue
+		}
+
+		if !channel.IsActive {
+			logger.Debug("Channel %d is not active", channel.ID)
+			continue
+		}
+
+		resp, err := s.proxyChatToChannel(req, apiKey, ipAddress, requestID, startTime, channel, mapping.UpstreamModel)
+		if err != nil {
+			logger.Error("Failed to proxy chat to channel %d: %v", channel.ID, err)
+			continue
+		}
+		return resp, nil
+	}
+
+	return nil, fmt.Errorf("all channels failed for model: %s", req.Model)
+}
+
+// proxyChatToChannel proxies OpenAI chat request to a specific channel
+func (s *ProxyService) proxyChatToChannel(req *model.OpenAIChatRequest, apiKey string, ipAddress string, requestID string, startTime time.Time, channel *model.Channel, upstreamModel string) (*model.OpenAIChatResponse, error) {
+	var channelID int64
+	var baseURL string
+	var apiKeyToUse string
+	var timeout time.Duration
+
+	if channel != nil {
+		channelID = channel.ID
+		baseURL = channel.BaseURL
+		apiKeyToUse = channel.APIKey
+		timeout = time.Duration(channel.Timeout) * time.Second
+	} else {
+		channelID = 0
+		baseURL = "https://api.anthropic.com"
+		apiKeyToUse = apiKey
+		timeout = 120 * time.Second
+	}
+
+	// Clone the request and update the model
+	proxyReq := &model.OpenAIChatRequest{
+		Model:       upstreamModel,
+		Messages:    req.Messages,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		Stream:      false,
+		Stop:        req.Stop,
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
+	}
+
+	// Handle max_tokens conversion
+	if req.MaxTokens != nil {
+		proxyReq.MaxTokens = req.MaxTokens
+	} else {
+		defaultTokens := 4096
+		proxyReq.MaxTokens = &defaultTokens
+	}
+
+	// Marshal request body
+	bodyBytes, err := json.Marshal(proxyReq)
+	if err != nil {
+		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "marshal_request", err.Error(), ipAddress)
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Create HTTP request with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Use /v1/chat/completions for OpenAI format
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/chat/completions", bytes.NewReader(bodyBytes))
+	if err != nil {
+		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "create_request", err.Error(), ipAddress)
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKeyToUse)
+
+	// Make request
+	httpResp, err := s.client.Do(httpReq)
+	if err != nil {
+		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "http_request", err.Error(), ipAddress)
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "read_response", err.Error(), ipAddress)
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check for error response
+	if httpResp.StatusCode != http.StatusOK {
+		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, httpResp, "api_error", string(respBody), ipAddress)
+		return nil, fmt.Errorf("API error: status %d, response: %s", httpResp.StatusCode, string(respBody))
+	}
+
+	// Parse response
+	var response model.OpenAIChatResponse
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, httpResp, "parse_response", err.Error(), ipAddress)
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Log successful request
+	s.logChatSuccess(channelID, requestID, req.Model, upstreamModel, startTime, &response, ipAddress)
+
+	return &response, nil
+}
+
+// ProxyChatStream proxies an OpenAI streaming chat completion request
+func (s *ProxyService) ProxyChatStream(req *model.OpenAIChatRequest, apiKey string, ipAddress string, w http.ResponseWriter) error {
+	startTime := time.Now()
+	requestID := uuid.New().String()
+
+	// Find model mapping
+	mappings, err := s.mappingRepo.FindByDisplayModel(req.Model)
+	if err != nil || len(mappings) == 0 {
+		return s.proxyChatStreamToChannel(req, apiKey, ipAddress, requestID, startTime, nil, req.Model, w)
+	}
+
+	// Try each mapped channel
+	for _, mapping := range mappings {
+		if !mapping.IsEnabled {
+			continue
+		}
+
+		channel, err := s.channelRepo.GetByID(mapping.ChannelID)
+		if err != nil || !channel.IsActive {
+			continue
+		}
+
+		if err := s.proxyChatStreamToChannel(req, apiKey, ipAddress, requestID, startTime, channel, mapping.UpstreamModel, w); err != nil {
+			logger.Error("Chat stream proxy to channel %d failed: %v", channel.ID, err)
+			continue
+		}
+		return nil
+	}
+
+	return fmt.Errorf("all channels failed for streaming model: %s", req.Model)
+}
+
+// proxyChatStreamToChannel proxies OpenAI streaming request to a specific channel
+func (s *ProxyService) proxyChatStreamToChannel(req *model.OpenAIChatRequest, apiKey string, ipAddress string, requestID string, startTime time.Time, channel *model.Channel, upstreamModel string, w http.ResponseWriter) error {
+	var channelID int64
+	var baseURL string
+	var apiKeyToUse string
+	var timeout time.Duration
+
+	if channel != nil {
+		channelID = channel.ID
+		baseURL = channel.BaseURL
+		apiKeyToUse = channel.APIKey
+		timeout = time.Duration(channel.Timeout) * time.Second
+	} else {
+		channelID = 0
+		baseURL = "https://api.anthropic.com"
+		apiKeyToUse = apiKey
+		timeout = 120 * time.Second
+	}
+
+	// Clone the request
+	proxyReq := &model.OpenAIChatRequest{
+		Model:       upstreamModel,
+		Messages:    req.Messages,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		Stream:      true,
+		Stop:        req.Stop,
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
+	}
+
+	if req.MaxTokens != nil {
+		proxyReq.MaxTokens = req.MaxTokens
+	} else {
+		defaultTokens := 4096
+		proxyReq.MaxTokens = &defaultTokens
+	}
+
+	bodyBytes, _ := json.Marshal(proxyReq)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/chat/completions", bytes.NewReader(bodyBytes))
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKeyToUse)
+
+	httpResp, err := s.client.Do(httpReq)
+	if err != nil {
+		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "http_request", err.Error(), ipAddress)
+		return err
+	}
+	defer httpResp.Body.Close()
+
+	// Set streaming headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// Copy stream
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return fmt.Errorf("streaming not supported")
+	}
+
+	// Read and forward SSE chunks
+	scanner := newLineScanner(httpResp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+
+		// Forward SSE data line
+		if strings.HasPrefix(line, "data: ") {
+			w.Write([]byte(line))
+			w.Write([]byte("\n\n"))
+			flusher.Flush()
+		}
+	}
+
+	return nil
+}
+
+// logChatSuccess logs a successful OpenAI chat request
+func (s *ProxyService) logChatSuccess(channelID int64, requestID, modelName, upstreamModel string, startTime time.Time, resp *model.OpenAIChatResponse, ipAddress string) {
+	responseTime := time.Now()
+	latencyMs := int(responseTime.Sub(startTime).Milliseconds())
+
+	log := &model.RequestLog{
+		ChannelID:     channelID,
+		RequestID:     requestID,
+		ModelName:     modelName,
+		UpstreamModel: upstreamModel,
+		InputTokens:   resp.Usage.PromptTokens,
+		OutputTokens:  resp.Usage.CompletionTokens,
+		TotalTokens:   resp.Usage.TotalTokens,
+		RequestTime:   startTime,
+		ResponseTime:  &responseTime,
+		LatencyMs:     latencyMs,
+		Status:        "success",
+		IPAddress:     ipAddress,
+	}
+
+	if _, err := s.logRepo.Create(log); err != nil {
+		logger.Error("Failed to create log: %v", err)
+	}
+}
+
+// logChatError logs a failed OpenAI chat request
+func (s *ProxyService) logChatError(channelID int64, requestID, modelName, upstreamModel string, startTime time.Time, httpResp *http.Response, errorCode, errorMessage, ipAddress string) {
+	responseTime := time.Now()
+	latencyMs := int(responseTime.Sub(startTime).Milliseconds())
+
+	statusCode := ""
+	if httpResp != nil {
+		statusCode = fmt.Sprintf("%d", httpResp.StatusCode)
+	}
+
+	log := &model.RequestLog{
+		ChannelID:     channelID,
+		RequestID:     requestID,
+		ModelName:     modelName,
+		UpstreamModel: upstreamModel,
+		RequestTime:   startTime,
+		ResponseTime:  &responseTime,
+		LatencyMs:     latencyMs,
+		Status:        "error",
+		ErrorCode:     errorCode,
+		ErrorMessage:  errorMessage,
+		IPAddress:     ipAddress,
+	}
+
+	if statusCode != "" {
+		log.ErrorCode = statusCode + ":" + errorCode
+	}
+
+	if _, err := s.logRepo.Create(log); err != nil {
+		logger.Error("Failed to create error log: %v", err)
+	}
+}
+
+// lineScanner helps scan SSE streams line by line
+type lineScanner struct {
+	reader io.Reader
+	buffer []byte
+}
+
+func newLineScanner(r io.Reader) *lineScanner {
+	return &lineScanner{reader: r, buffer: make([]byte, 0, 4096)}
+}
+
+func (s *lineScanner) Scan() bool {
+	buf := make([]byte, 1)
+	s.buffer = s.buffer[:0]
+
+	for {
+		n, err := s.reader.Read(buf)
+		if err != nil {
+			return len(s.buffer) > 0
+		}
+		if n > 0 {
+			if buf[0] == '\n' {
+				return len(s.buffer) > 0
+			}
+			if buf[0] != '\r' {
+				s.buffer = append(s.buffer, buf[0])
+			}
+		}
+	}
+}
+
+func (s *lineScanner) Text() string {
+	return string(s.buffer)
+}
+
+func (s *lineScanner) Bytes() []byte {
+	return s.buffer
 }
