@@ -32,8 +32,9 @@ api.interceptors.response.use(
     // 3. Not an auth endpoint request (to avoid infinite loops)
     if (
       error.response?.status === 401 &&
-      !window.location.pathname.startsWith('/login') &&
-      !error.config?.url?.startsWith('/auth/')
+      window.location.pathname !== '/login' &&
+      !error.config?.url?.startsWith('/auth/') &&
+      !error.config?.url?.startsWith('auth/')
     ) {
       window.location.href = '/login';
     }

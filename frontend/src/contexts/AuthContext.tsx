@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { authApi } from '@/api/client';
 
 interface AuthContextType {
@@ -26,10 +26,24 @@ interface AuthProviderProps {
 export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const isChecking = useRef(false);
 
   useEffect(() => {
     // Check if already authenticated by verifying with server
+    // Skip verification if on login page to avoid unnecessary 401s
+    if (window.location.pathname === '/login') {
+      setIsLoading(false);
+      setIsAuthenticated(false);
+      return;
+    }
+
+    // Prevent duplicate verification calls
+    if (isChecking.current) {
+      return;
+    }
+
     const checkAuth = async () => {
+      isChecking.current = true;
       try {
         const result = await authApi.verify();
         setIsAuthenticated(result.data.authenticated);
@@ -37,6 +51,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         setIsAuthenticated(false);
       } finally {
         setIsLoading(false);
+        isChecking.current = false;
       }
     };
     checkAuth();
