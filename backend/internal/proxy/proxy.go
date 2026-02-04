@@ -532,60 +532,83 @@ func (s *ProxyService) proxyChatToChannel(req *model.OpenAIChatRequest, apiKey s
 	var baseURL string
 	var apiKeyToUse string
 	var timeout time.Duration
+	var provider string
 
 	if channel != nil {
 		channelID = channel.ID
 		baseURL = channel.BaseURL
 		apiKeyToUse = channel.APIKey
 		timeout = time.Duration(channel.Timeout) * time.Second
+		provider = channel.Provider
 	} else {
 		channelID = 0
 		baseURL = "https://api.anthropic.com"
 		apiKeyToUse = apiKey
 		timeout = 120 * time.Second
+		provider = "anthropic"
 	}
 
-	// Clone the request and update the model
-	proxyReq := &model.OpenAIChatRequest{
-		Model:       upstreamModel,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		Stream:      false,
-		Stop:        req.Stop,
-		Tools:       req.Tools,
-		ToolChoice:  req.ToolChoice,
-	}
-
-	// Handle max_tokens conversion
-	if req.MaxTokens != nil {
-		proxyReq.MaxTokens = req.MaxTokens
-	} else {
-		defaultTokens := 4096
-		proxyReq.MaxTokens = &defaultTokens
-	}
-
-	// Marshal request body
-	bodyBytes, err := json.Marshal(proxyReq)
-	if err != nil {
-		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "marshal_request", err.Error(), ipAddress)
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Create HTTP request with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Use /v1/chat/completions for OpenAI format
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/chat/completions", bytes.NewReader(bodyBytes))
-	if err != nil {
-		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "create_request", err.Error(), ipAddress)
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+	var httpReq *http.Request
+	var err error
 
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+apiKeyToUse)
+	// Choose API format based on provider
+	if provider == "anthropic" {
+		// Convert OpenAI format to Anthropic format
+		anthropicReq := s.convertOpenAIToAnthropic(req, upstreamModel)
+
+		bodyBytes, err := json.Marshal(anthropicReq)
+		if err != nil {
+			s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "marshal_request", err.Error(), ipAddress)
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
+
+		httpReq, err = http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/messages", bytes.NewReader(bodyBytes))
+		if err != nil {
+			s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "create_request", err.Error(), ipAddress)
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("x-api-key", apiKeyToUse)
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		// Use OpenAI format directly
+		proxyReq := &model.OpenAIChatRequest{
+			Model:       upstreamModel,
+			Messages:    req.Messages,
+			Temperature: req.Temperature,
+			TopP:        req.TopP,
+			Stream:      false,
+			Stop:        req.Stop,
+			Tools:       req.Tools,
+			ToolChoice:  req.ToolChoice,
+		}
+
+		if req.MaxTokens != nil {
+			proxyReq.MaxTokens = req.MaxTokens
+		} else {
+			defaultTokens := 4096
+			proxyReq.MaxTokens = &defaultTokens
+		}
+
+		bodyBytes, err := json.Marshal(proxyReq)
+		if err != nil {
+			s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "marshal_request", err.Error(), ipAddress)
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
+
+		httpReq, err = http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/chat/completions", bytes.NewReader(bodyBytes))
+		if err != nil {
+			s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "create_request", err.Error(), ipAddress)
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+apiKeyToUse)
+	}
 
 	// Make request
 	httpResp, err := s.client.Do(httpReq)
@@ -608,17 +631,122 @@ func (s *ProxyService) proxyChatToChannel(req *model.OpenAIChatRequest, apiKey s
 		return nil, fmt.Errorf("API error: status %d, response: %s", httpResp.StatusCode, string(respBody))
 	}
 
-	// Parse response
-	var response model.OpenAIChatResponse
-	if err := json.Unmarshal(respBody, &response); err != nil {
-		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, httpResp, "parse_response", err.Error(), ipAddress)
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+	// Parse response based on provider
+	var response *model.OpenAIChatResponse
+	if provider == "anthropic" {
+		// Convert Anthropic response to OpenAI format
+		var anthropicResp model.AnthropicMessageResponse
+		if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
+			s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, httpResp, "parse_response", err.Error(), ipAddress)
+			return nil, fmt.Errorf("failed to parse response: %w", err)
+		}
+		response = s.convertAnthropicToOpenAI(&anthropicResp, req.Model)
+	} else {
+		if err := json.Unmarshal(respBody, &response); err != nil {
+			s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, httpResp, "parse_response", err.Error(), ipAddress)
+			return nil, fmt.Errorf("failed to parse response: %w", err)
+		}
 	}
 
 	// Log successful request
-	s.logChatSuccess(channelID, requestID, req.Model, upstreamModel, startTime, &response, ipAddress)
+	s.logChatSuccess(channelID, requestID, req.Model, upstreamModel, startTime, response, ipAddress)
 
-	return &response, nil
+	return response, nil
+}
+
+// convertOpenAIToAnthropic converts OpenAI chat request to Anthropic format
+func (s *ProxyService) convertOpenAIToAnthropic(req *model.OpenAIChatRequest, upstreamModel string) *model.AnthropicMessageRequest {
+	var messages []model.Message
+	var systemPrompt string
+
+	for _, msg := range req.Messages {
+		role := msg.Role
+		content := ""
+
+		// Extract content as string
+		switch c := msg.Content.(type) {
+		case string:
+			content = c
+		case []interface{}:
+			// Handle array of content blocks
+			for _, block := range c {
+				if m, ok := block.(map[string]interface{}); ok {
+					if t, ok := m["text"].(string); ok {
+						content += t
+					}
+				}
+			}
+		}
+
+		// Handle system message
+		if role == "system" {
+			systemPrompt = content
+			continue
+		}
+
+		// Map OpenAI roles to Anthropic roles
+		if role == "assistant" {
+			role = "assistant"
+		} else {
+			role = "user"
+		}
+
+		messages = append(messages, model.Message{
+			Role:    role,
+			Content: content,
+		})
+	}
+
+	maxTokens := 4096
+	if req.MaxTokens != nil {
+		maxTokens = *req.MaxTokens
+	}
+
+	return &model.AnthropicMessageRequest{
+		Model:       upstreamModel,
+		MaxTokens:   maxTokens,
+		Messages:    messages,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		System:      systemPrompt,
+	}
+}
+
+// convertAnthropicToOpenAI converts Anthropic response to OpenAI format
+func (s *ProxyService) convertAnthropicToOpenAI(resp *model.AnthropicMessageResponse, displayModel string) *model.OpenAIChatResponse {
+	content := ""
+	for _, c := range resp.Content {
+		if c.Type == "text" {
+			content += c.Text
+		}
+	}
+
+	finishReason := "stop"
+	if resp.StopReason == "max_tokens" {
+		finishReason = "length"
+	}
+
+	return &model.OpenAIChatResponse{
+		ID:      resp.ID,
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Model:   displayModel,
+		Choices: []model.OpenAIChoice{
+			{
+				Index: 0,
+				Message: model.OpenAIMessage{
+					Role:    "assistant",
+					Content: content,
+				},
+				FinishReason: finishReason,
+			},
+		},
+		Usage: model.OpenAIUsage{
+			PromptTokens:     resp.Usage.InputTokens,
+			CompletionTokens: resp.Usage.OutputTokens,
+			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
+		},
+	}
 }
 
 // ProxyChatStream proxies an OpenAI streaming chat completion request
@@ -671,54 +799,84 @@ func (s *ProxyService) proxyChatStreamToChannel(req *model.OpenAIChatRequest, ap
 	var baseURL string
 	var apiKeyToUse string
 	var timeout time.Duration
+	var provider string
 
 	if channel != nil {
 		channelID = channel.ID
 		baseURL = channel.BaseURL
 		apiKeyToUse = channel.APIKey
 		timeout = time.Duration(channel.Timeout) * time.Second
+		provider = channel.Provider
 	} else {
 		channelID = 0
 		baseURL = "https://api.anthropic.com"
 		apiKeyToUse = apiKey
 		timeout = 120 * time.Second
-	}
-
-	// Clone the request
-	proxyReq := &model.OpenAIChatRequest{
-		Model:       upstreamModel,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		Stream:      true,
-		Stop:        req.Stop,
-		Tools:       req.Tools,
-		ToolChoice:  req.ToolChoice,
-	}
-
-	if req.MaxTokens != nil {
-		proxyReq.MaxTokens = req.MaxTokens
-	} else {
-		defaultTokens := 4096
-		proxyReq.MaxTokens = &defaultTokens
-	}
-
-	bodyBytes, err := json.Marshal(proxyReq)
-	if err != nil {
-		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "marshal_request", err.Error(), ipAddress)
-		return fmt.Errorf("failed to marshal request: %w", err)
+		provider = "anthropic"
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/chat/completions", bytes.NewReader(bodyBytes))
-	if err != nil {
-		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "create_request", err.Error(), ipAddress)
-		return fmt.Errorf("failed to create request: %w", err)
+	var httpReq *http.Request
+	var err error
+
+	// Choose API format based on provider
+	if provider == "anthropic" {
+		// Convert OpenAI format to Anthropic format
+		anthropicReq := s.convertOpenAIToAnthropic(req, upstreamModel)
+		anthropicReq.Stream = true
+
+		bodyBytes, err := json.Marshal(anthropicReq)
+		if err != nil {
+			s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "marshal_request", err.Error(), ipAddress)
+			return fmt.Errorf("failed to marshal request: %w", err)
+		}
+
+		httpReq, err = http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/messages", bytes.NewReader(bodyBytes))
+		if err != nil {
+			s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "create_request", err.Error(), ipAddress)
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("x-api-key", apiKeyToUse)
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		// Use OpenAI format directly
+		proxyReq := &model.OpenAIChatRequest{
+			Model:       upstreamModel,
+			Messages:    req.Messages,
+			Temperature: req.Temperature,
+			TopP:        req.TopP,
+			Stream:      true,
+			Stop:        req.Stop,
+			Tools:       req.Tools,
+			ToolChoice:  req.ToolChoice,
+		}
+
+		if req.MaxTokens != nil {
+			proxyReq.MaxTokens = req.MaxTokens
+		} else {
+			defaultTokens := 4096
+			proxyReq.MaxTokens = &defaultTokens
+		}
+
+		bodyBytes, err := json.Marshal(proxyReq)
+		if err != nil {
+			s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "marshal_request", err.Error(), ipAddress)
+			return fmt.Errorf("failed to marshal request: %w", err)
+		}
+
+		httpReq, err = http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/chat/completions", bytes.NewReader(bodyBytes))
+		if err != nil {
+			s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "create_request", err.Error(), ipAddress)
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+apiKeyToUse)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+apiKeyToUse)
 
 	httpResp, err := s.client.Do(httpReq)
 	if err != nil {
@@ -745,28 +903,31 @@ func (s *ProxyService) proxyChatStreamToChannel(req *model.OpenAIChatRequest, ap
 		return fmt.Errorf("streaming not supported")
 	}
 
-	// Read and forward SSE chunks
-	scanner := newLineScanner(httpResp.Body)
+	// Handle streaming based on provider
 	hasData := false
-	for scanner.Scan() {
-		line := scanner.Text()
+	if provider == "anthropic" {
+		// Convert Anthropic SSE stream to OpenAI SSE format
+		hasData = s.convertAnthropicStreamToOpenAI(httpResp.Body, w, flusher, req.Model, requestID)
+	} else {
+		// Forward OpenAI SSE stream directly
+		scanner := newLineScanner(httpResp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
 
-		// Skip empty lines
-		if line == "" {
-			continue
-		}
+			if line == "" {
+				continue
+			}
 
-		// Skip SSE comments but not empty data
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
+			if strings.HasPrefix(line, ":") {
+				continue
+			}
 
-		// Forward SSE data line
-		if strings.HasPrefix(line, "data:") {
-			hasData = true
-			w.Write([]byte(line))
-			w.Write([]byte("\n\n"))
-			flusher.Flush()
+			if strings.HasPrefix(line, "data:") {
+				hasData = true
+				w.Write([]byte(line))
+				w.Write([]byte("\n\n"))
+				flusher.Flush()
+			}
 		}
 	}
 
@@ -789,6 +950,120 @@ func (s *ProxyService) proxyChatStreamToChannel(req *model.OpenAIChatRequest, ap
 	}
 
 	return nil
+}
+
+// convertAnthropicStreamToOpenAI converts Anthropic SSE stream to OpenAI SSE format
+func (s *ProxyService) convertAnthropicStreamToOpenAI(body io.Reader, w http.ResponseWriter, flusher http.Flusher, displayModel string, requestID string) bool {
+	scanner := newLineScanner(body)
+	hasData := false
+	messageID := "chatcmpl-" + requestID
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if line == "" {
+			continue
+		}
+
+		if strings.HasPrefix(line, "event:") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "data:") {
+			dataStr := strings.TrimPrefix(line, "data:")
+			dataStr = strings.TrimSpace(dataStr)
+
+			if dataStr == "" {
+				continue
+			}
+
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(dataStr), &event); err != nil {
+				continue
+			}
+
+			eventType, _ := event["type"].(string)
+
+			switch eventType {
+			case "content_block_delta":
+				// Extract text delta
+				if delta, ok := event["delta"].(map[string]interface{}); ok {
+					if text, ok := delta["text"].(string); ok {
+						hasData = true
+						chunk := model.OpenAIStreamChunk{
+							ID:      messageID,
+							Object:  "chat.completion.chunk",
+							Created: time.Now().Unix(),
+							Model:   displayModel,
+							Choices: []model.OpenAIStreamChoice{
+								{
+									Index: 0,
+									Delta: model.OpenAIDelta{
+										Content: text,
+									},
+									FinishReason: nil,
+								},
+							},
+						}
+						chunkBytes, _ := json.Marshal(chunk)
+						w.Write([]byte("data: "))
+						w.Write(chunkBytes)
+						w.Write([]byte("\n\n"))
+						flusher.Flush()
+					}
+				}
+
+			case "message_start":
+				// Send initial chunk with role
+				hasData = true
+				chunk := model.OpenAIStreamChunk{
+					ID:      messageID,
+					Object:  "chat.completion.chunk",
+					Created: time.Now().Unix(),
+					Model:   displayModel,
+					Choices: []model.OpenAIStreamChoice{
+						{
+							Index: 0,
+							Delta: model.OpenAIDelta{
+								Role: "assistant",
+							},
+							FinishReason: nil,
+						},
+					},
+				}
+				chunkBytes, _ := json.Marshal(chunk)
+				w.Write([]byte("data: "))
+				w.Write(chunkBytes)
+				w.Write([]byte("\n\n"))
+				flusher.Flush()
+
+			case "message_stop":
+				// Send final chunk with finish_reason
+				finishReason := "stop"
+				chunk := model.OpenAIStreamChunk{
+					ID:      messageID,
+					Object:  "chat.completion.chunk",
+					Created: time.Now().Unix(),
+					Model:   displayModel,
+					Choices: []model.OpenAIStreamChoice{
+						{
+							Index:        0,
+							Delta:        model.OpenAIDelta{},
+							FinishReason: &finishReason,
+						},
+					},
+				}
+				chunkBytes, _ := json.Marshal(chunk)
+				w.Write([]byte("data: "))
+				w.Write(chunkBytes)
+				w.Write([]byte("\n\n"))
+				w.Write([]byte("data: [DONE]\n\n"))
+				flusher.Flush()
+			}
+		}
+	}
+
+	return hasData
 }
 
 // logChatSuccess logs a successful OpenAI chat request
