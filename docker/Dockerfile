@@ -37,8 +37,38 @@ COPY --from=backend-builder /app/backend/migrations /app/migrations
 # Copy frontend assets
 COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 
-# Copy nginx config
-COPY docker/nginx-single.conf /etc/nginx/conf.d/default.conf
+# Create nginx config directly
+RUN cat > /etc/nginx/conf.d/default.conf << 'EOF'
+server {
+    listen 8088;
+    server_name localhost;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /v1 {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+}
+EOF
 
 # Copy supervisord config
 RUN mkdir -p /var/log/supervisor
