@@ -233,3 +233,62 @@ func (h *ProxyHandler) ProxyChatCompletions(c *gin.Context) {
 
 	c.JSON(http.StatusOK, resp)
 }
+
+// ListModels handles GET /v1/models endpoint
+func (h *ProxyHandler) ListModels(c *gin.Context) {
+	// Return a static list of available models
+	// In production, you might want to fetch this from database or upstream
+	c.JSON(http.StatusOK, gin.H{
+		"object": "list",
+		"data": []gin.H{
+			{
+				"id":      "gpt-4o",
+				"object":  "model",
+				"created": 1234567890,
+				"owned_by": "anthropic",
+			},
+			{
+				"id":      "gpt-4o-mini",
+				"object":  "model",
+				"created": 1234567890,
+				"owned_by": "anthropic",
+			},
+			{
+				"id":      "gpt-4-turbo",
+				"object":  "model",
+				"created": 1234567890,
+				"owned_by": "anthropic",
+			},
+			{
+				"id":      "gpt-4",
+				"object":  "model",
+				"created": 1234567890,
+				"owned_by": "anthropic",
+			},
+			{
+				"id":      "gpt-3.5-turbo",
+				"object":  "model",
+				"created": 1234567890,
+				"owned_by": "anthropic",
+			},
+			{
+				"id":      "claude-3-5-sonnet-20241022",
+				"object":  "model",
+				"created": 1234567890,
+				"owned_by": "anthropic",
+			},
+			{
+				"id":      "claude-3-5-haiku-20241022",
+				"object":  "model",
+				"created": 1234567890,
+				"owned_by": "anthropic",
+			},
+			{
+				"id":      "claude-3-opus-20240229",
+				"object":  "model",
+				"created": 1234567890,
+				"owned_by": "anthropic",
+			},
+		},
+	})
+}
