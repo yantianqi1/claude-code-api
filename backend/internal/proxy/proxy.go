@@ -185,6 +185,10 @@ func (s *ProxyService) ProxyMessageStream(req *model.AnthropicMessageRequest, ap
 		return s.proxyStreamToChannel(req, apiKey, ipAddress, requestID, startTime, nil, req.Model, w)
 	}
 
+	// Track if we've started writing to response
+	// Once headers are written, we cannot try another channel
+	var lastErr error
+
 	// Try each mapped channel
 	for _, mapping := range mappings {
 		if !mapping.IsEnabled {
@@ -196,13 +200,24 @@ func (s *ProxyService) ProxyMessageStream(req *model.AnthropicMessageRequest, ap
 			continue
 		}
 
-		if err := s.proxyStreamToChannel(req, apiKey, ipAddress, requestID, startTime, channel, mapping.UpstreamModel, w); err != nil {
+		err = s.proxyStreamToChannel(req, apiKey, ipAddress, requestID, startTime, channel, mapping.UpstreamModel, w)
+		if err != nil {
 			logger.Error("Stream proxy to channel %d failed: %v", channel.ID, err)
+			lastErr = err
+			// Check if response has been started (headers written)
+			// If so, we cannot try another channel
+			if rw, ok := w.(interface{ Written() bool }); ok && rw.Written() {
+				// Response already started, cannot switch channels
+				return err
+			}
 			continue
 		}
 		return nil
 	}
 
+	if lastErr != nil {
+		return lastErr
+	}
 	return fmt.Errorf("all channels failed for streaming model: %s", req.Model)
 }
 
@@ -241,12 +256,20 @@ func (s *ProxyService) proxyStreamToChannel(req *model.AnthropicMessageRequest, 
 		Metadata:      req.Metadata,
 	}
 
-	bodyBytes, _ := json.Marshal(proxyReq)
+	bodyBytes, err := json.Marshal(proxyReq)
+	if err != nil {
+		s.logError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "marshal_request", err.Error(), ipAddress)
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	httpReq, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/messages", bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/messages", bytes.NewReader(bodyBytes))
+	if err != nil {
+		s.logError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "create_request", err.Error(), ipAddress)
+		return fmt.Errorf("failed to create request: %w", err)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", apiKeyToUse)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
@@ -257,6 +280,18 @@ func (s *ProxyService) proxyStreamToChannel(req *model.AnthropicMessageRequest, 
 		return err
 	}
 	defer httpResp.Body.Close()
+
+	// Check for error response before streaming
+	if httpResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(httpResp.Body)
+		var errResp model.AnthropicErrorResponse
+		if err := json.Unmarshal(respBody, &errResp); err == nil {
+			s.logError(channelID, requestID, req.Model, upstreamModel, startTime, httpResp, errResp.Error.Type, errResp.Error.Message, ipAddress)
+			return fmt.Errorf("API error: %s - %s", errResp.Error.Type, errResp.Error.Message)
+		}
+		s.logError(channelID, requestID, req.Model, upstreamModel, startTime, httpResp, "unknown", string(respBody), ipAddress)
+		return fmt.Errorf("API error: status %d, response: %s", httpResp.StatusCode, string(respBody))
+	}
 
 	// Set streaming headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -272,64 +307,89 @@ func (s *ProxyService) proxyStreamToChannel(req *model.AnthropicMessageRequest, 
 	inputTokens := 0
 	outputTokens := 0
 
-	decoder := json.NewDecoder(httpResp.Body)
-	for {
-		var event map[string]interface{}
-		if err := decoder.Decode(&event); err != nil {
-			if err == io.EOF {
-				break
-			}
+	// Use SSE line scanner instead of JSON decoder
+	// Anthropic streaming uses SSE format: "event: xxx\ndata: {...}\n\n"
+	scanner := newLineScanner(httpResp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Skip empty lines
+		if line == "" {
 			continue
 		}
 
-		// Track token usage
-		if eventType, ok := event["type"].(string); ok {
-			if eventType == "message_stop" {
-				// Log the final stats
-				responseTime := time.Now()
-				latencyMs := int(responseTime.Sub(startTime).Milliseconds())
-
-				log := &model.RequestLog{
-					ChannelID:     channelID,
-					RequestID:     requestID,
-					ModelName:     req.Model,
-					UpstreamModel: upstreamModel,
-					InputTokens:   inputTokens,
-					OutputTokens:  outputTokens,
-					TotalTokens:   inputTokens + outputTokens,
-					RequestTime:   startTime,
-					ResponseTime:  &responseTime,
-					LatencyMs:     latencyMs,
-					Status:        "success",
-					IPAddress:     ipAddress,
-				}
-				s.logRepo.Create(log)
-			}
+		// Handle event type line (optional)
+		if strings.HasPrefix(line, "event:") {
+			// Forward the event line as-is
+			w.Write([]byte(line))
+			w.Write([]byte("\n"))
+			continue
 		}
 
-		// Extract token usage from message_start event
-		if usage, ok := event["message"].(map[string]interface{}); ok {
-			if u, ok := usage["usage"].(map[string]interface{}); ok {
-				if input, ok := u["input_tokens"].(float64); ok {
-					inputTokens = int(input)
+		// Handle data line
+		if strings.HasPrefix(line, "data:") {
+			// Extract JSON data
+			dataStr := strings.TrimPrefix(line, "data:")
+			dataStr = strings.TrimSpace(dataStr)
+
+			if dataStr == "" {
+				continue
+			}
+
+			// Parse JSON to track token usage
+			var event map[string]interface{}
+			if err := json.Unmarshal([]byte(dataStr), &event); err == nil {
+				// Track token usage
+				if eventType, ok := event["type"].(string); ok {
+					if eventType == "message_stop" {
+						// Log the final stats
+						responseTime := time.Now()
+						latencyMs := int(responseTime.Sub(startTime).Milliseconds())
+
+						log := &model.RequestLog{
+							ChannelID:     channelID,
+							RequestID:     requestID,
+							ModelName:     req.Model,
+							UpstreamModel: upstreamModel,
+							InputTokens:   inputTokens,
+							OutputTokens:  outputTokens,
+							TotalTokens:   inputTokens + outputTokens,
+							RequestTime:   startTime,
+							ResponseTime:  &responseTime,
+							LatencyMs:     latencyMs,
+							Status:        "success",
+							IPAddress:     ipAddress,
+						}
+						s.logRepo.Create(log)
+					}
+				}
+
+				// Extract token usage from message_start event
+				if msg, ok := event["message"].(map[string]interface{}); ok {
+					if u, ok := msg["usage"].(map[string]interface{}); ok {
+						if input, ok := u["input_tokens"].(float64); ok {
+							inputTokens = int(input)
+						}
+					}
+				}
+
+				// Extract output tokens from message_delta event
+				if eventType, ok := event["type"].(string); ok {
+					if eventType == "message_delta" {
+						if usage, ok := event["usage"].(map[string]interface{}); ok {
+							if output, ok := usage["output_tokens"].(float64); ok {
+								outputTokens = int(output)
+							}
+						}
+					}
 				}
 			}
-		}
 
-		// Track output tokens from content_block_delta events
-		if _, ok := event["type"].(string); ok {
-			if delta, ok := event["delta"].(map[string]interface{}); ok {
-				if _, ok := delta["type"].(string); ok {
-					outputTokens++
-				}
-			}
+			// Forward the data line
+			w.Write([]byte(line))
+			w.Write([]byte("\n\n"))
+			flusher.Flush()
 		}
-
-		// Write to response
-		jsonBytes, _ := json.Marshal(event)
-		w.Write(jsonBytes)
-		w.Write([]byte("\n"))
-		flusher.Flush()
 	}
 
 	return nil
@@ -572,6 +632,9 @@ func (s *ProxyService) ProxyChatStream(req *model.OpenAIChatRequest, apiKey stri
 		return s.proxyChatStreamToChannel(req, apiKey, ipAddress, requestID, startTime, nil, req.Model, w)
 	}
 
+	// Track if we've started writing to response
+	var lastErr error
+
 	// Try each mapped channel
 	for _, mapping := range mappings {
 		if !mapping.IsEnabled {
@@ -583,13 +646,22 @@ func (s *ProxyService) ProxyChatStream(req *model.OpenAIChatRequest, apiKey stri
 			continue
 		}
 
-		if err := s.proxyChatStreamToChannel(req, apiKey, ipAddress, requestID, startTime, channel, mapping.UpstreamModel, w); err != nil {
+		err = s.proxyChatStreamToChannel(req, apiKey, ipAddress, requestID, startTime, channel, mapping.UpstreamModel, w)
+		if err != nil {
 			logger.Error("Chat stream proxy to channel %d failed: %v", channel.ID, err)
+			lastErr = err
+			// Check if response has been started (headers written)
+			if rw, ok := w.(interface{ Written() bool }); ok && rw.Written() {
+				return err
+			}
 			continue
 		}
 		return nil
 	}
 
+	if lastErr != nil {
+		return lastErr
+	}
 	return fmt.Errorf("all channels failed for streaming model: %s", req.Model)
 }
 
@@ -631,12 +703,20 @@ func (s *ProxyService) proxyChatStreamToChannel(req *model.OpenAIChatRequest, ap
 		proxyReq.MaxTokens = &defaultTokens
 	}
 
-	bodyBytes, _ := json.Marshal(proxyReq)
+	bodyBytes, err := json.Marshal(proxyReq)
+	if err != nil {
+		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "marshal_request", err.Error(), ipAddress)
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	httpReq, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/chat/completions", bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/chat/completions", bytes.NewReader(bodyBytes))
+	if err != nil {
+		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, nil, "create_request", err.Error(), ipAddress)
+		return fmt.Errorf("failed to create request: %w", err)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKeyToUse)
 
@@ -647,7 +727,14 @@ func (s *ProxyService) proxyChatStreamToChannel(req *model.OpenAIChatRequest, ap
 	}
 	defer httpResp.Body.Close()
 
-	// Set streaming headers
+	// Check for error response before streaming
+	if httpResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(httpResp.Body)
+		s.logChatError(channelID, requestID, req.Model, upstreamModel, startTime, httpResp, "api_error", string(respBody), ipAddress)
+		return fmt.Errorf("API error: status %d, response: %s", httpResp.StatusCode, string(respBody))
+	}
+
+	// Set streaming headers after upstream validation
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -660,20 +747,45 @@ func (s *ProxyService) proxyChatStreamToChannel(req *model.OpenAIChatRequest, ap
 
 	// Read and forward SSE chunks
 	scanner := newLineScanner(httpResp.Body)
+	hasData := false
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, ":") {
+		// Skip empty lines
+		if line == "" {
+			continue
+		}
+
+		// Skip SSE comments but not empty data
+		if strings.HasPrefix(line, ":") {
 			continue
 		}
 
 		// Forward SSE data line
-		if strings.HasPrefix(line, "data: ") {
+		if strings.HasPrefix(line, "data:") {
+			hasData = true
 			w.Write([]byte(line))
 			w.Write([]byte("\n\n"))
 			flusher.Flush()
 		}
+	}
+
+	// Log success for streaming
+	if hasData {
+		responseTime := time.Now()
+		latencyMs := int(responseTime.Sub(startTime).Milliseconds())
+		log := &model.RequestLog{
+			ChannelID:     channelID,
+			RequestID:     requestID,
+			ModelName:     req.Model,
+			UpstreamModel: upstreamModel,
+			RequestTime:   startTime,
+			ResponseTime:  &responseTime,
+			LatencyMs:     latencyMs,
+			Status:        "success",
+			IPAddress:     ipAddress,
+		}
+		s.logRepo.Create(log)
 	}
 
 	return nil

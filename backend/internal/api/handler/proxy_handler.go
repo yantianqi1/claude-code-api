@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -91,18 +92,26 @@ func (h *ProxyHandler) ProxyMessage(c *gin.Context) {
 
 	// Handle streaming
 	if req.Stream {
-		c.Writer.Header().Set("Content-Type", "text/event-stream")
-		c.Writer.Header().Set("Cache-Control", "no-cache")
-		c.Writer.Header().Set("Connection", "keep-alive")
-
+		// Note: Headers are now set inside ProxyMessageStream after upstream validation
+		// This allows proper error response before streaming starts
 		if err := h.proxyService.ProxyMessageStream(&req, apiKey, ipAddress, c.Writer); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    "api_error",
-					"message": err.Error(),
-				},
-			})
+			// Only send JSON error if headers haven't been written yet
+			if !c.Writer.Written() {
+				c.JSON(http.StatusBadGateway, gin.H{
+					"type": "error",
+					"error": gin.H{
+						"type":    "api_error",
+						"message": err.Error(),
+					},
+				})
+			} else {
+				// Headers already sent, write error as SSE event
+				errorEvent := fmt.Sprintf("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"%s\"}}\n\n", err.Error())
+				c.Writer.Write([]byte(errorEvent))
+				if flusher, ok := c.Writer.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
 		}
 		return
 	}
@@ -207,17 +216,25 @@ func (h *ProxyHandler) ProxyChatCompletions(c *gin.Context) {
 
 	// Handle streaming
 	if req.Stream {
-		c.Writer.Header().Set("Content-Type", "text/event-stream")
-		c.Writer.Header().Set("Cache-Control", "no-cache")
-		c.Writer.Header().Set("Connection", "keep-alive")
-
+		// Note: Headers are now set inside ProxyChatStream after upstream validation
+		// This allows proper error response before streaming starts
 		if err := h.proxyService.ProxyChatStream(&req, apiKey, ipAddress, c.Writer); err != nil {
-			c.JSON(http.StatusBadGateway, model.OpenAIErrorResponse{
-				Error: model.OpenAIErrorDetail{
-					Type:    "api_error",
-					Message: err.Error(),
-				},
-			})
+			// Only send JSON error if headers haven't been written yet
+			if !c.Writer.Written() {
+				c.JSON(http.StatusBadGateway, model.OpenAIErrorResponse{
+					Error: model.OpenAIErrorDetail{
+						Type:    "api_error",
+						Message: err.Error(),
+					},
+				})
+			} else {
+				// Headers already sent, write error as SSE event
+				errorEvent := fmt.Sprintf("data: {\"error\":{\"type\":\"api_error\",\"message\":\"%s\"}}\n\n", err.Error())
+				c.Writer.Write([]byte(errorEvent))
+				if flusher, ok := c.Writer.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
 		}
 		return
 	}
