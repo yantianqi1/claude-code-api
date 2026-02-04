@@ -11,9 +11,6 @@
 # Logs
 *.log
 
-# Go
-go.sum
-
 # Node
 /frontend/node_modules/
 /frontend/dist/
