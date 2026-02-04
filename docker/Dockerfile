@@ -17,13 +17,10 @@ WORKDIR /app
 # Install build dependencies
 RUN apk add --no-cache git gcc musl-dev sqlite-dev
 
-COPY backend/go.mod backend/go.sum ./backend/
-RUN cd /app/backend && go mod download
-
 COPY backend/ /app/backend/
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o server ./backend/cmd/server
-RUN mv server /app/server
-RUN mv /app/backend/migrations /app/migrations
+WORKDIR /app/backend
+RUN go mod download
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o server ./cmd/server
 
 # Runtime stage - combined image
 FROM alpine:latest
@@ -34,8 +31,8 @@ RUN apk --no-cache add ca-certificates sqlite-libs nginx supervisor
 WORKDIR /app
 
 # Copy backend binary and migrations
-COPY --from=backend-builder /app/server /app/server
-COPY --from=backend-builder /app/migrations /app/migrations
+COPY --from=backend-builder /app/backend/server /app/server
+COPY --from=backend-builder /app/backend/migrations /app/migrations
 
 # Copy frontend assets
 COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
